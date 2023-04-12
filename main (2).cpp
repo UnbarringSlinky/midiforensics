@@ -1,13 +1,18 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
-#include <ext2fs/ext2fs.h>
+#include <cstdint>
+#include <cstring>
 
-constexpr uint32_t EXT3_SUPER_MAGIC = 0xEF53;
 constexpr char MIDI_HEADER[] = {'M', 'T', 'h', 'd'};
 
 bool is_midi_header(const char *data) {
     return std::equal(std::begin(MIDI_HEADER), std::end(MIDI_HEADER), data);
+}
+
+uint32_t read_big_endian_uint32(const char *data) {
+    return (static_cast<uint8_t>(data[0]) << 24) | (static_cast<uint8_t>(data[1]) << 16) |
+           (static_cast<uint8_t>(data[2]) << 8) | static_cast<uint8_t>(data[3]);
 }
 
 int main(int argc, char *argv[]) {
@@ -16,42 +21,39 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    ext2_filsys fs;
-    errcode_t retval;
-
-    retval = ext2fs_open(argv[1], 0, 0, 0, unix_io_manager, &fs);
-    if (retval) {
-        std::cerr << "Error: Cannot open the partition. Error code: " << retval << std::endl;
+    std::ifstream partition(argv[1], std::ios::binary);
+    if (!partition.is_open()) {
+        std::cerr << "Error: Cannot open the partition." << std::endl;
         return 1;
     }
 
-    if (fs->super->s_magic != EXT3_SUPER_MAGIC) {
-        std::cerr << "Error: Not an ext3 partition." << std::endl;
-        return 1;
-    }
+    partition.seekg(0, std::ios::end);
+    std::streampos partition_size = partition.tellg();
+    partition.seekg(0, std::ios::beg);
 
-    int block_size = EXT2_BLOCK_SIZE(fs->super);
-    std::vector<char> block_data(block_size);
-    int total_blocks = fs->super->s_blocks_count;
+    std::vector<char> partition_data(partition_size);
+    partition.read(partition_data.data(), partition_size);
 
     int midi_files_count = 0;
 
-    for (int block = 0; block < total_blocks; ++block) {
-        retval = io_channel_read_blk(fs->io, block, 1, block_data.data());
-        if (retval) {
-            std::cerr << "Error reading block " << block << ". Error code: " << retval << std::endl;
-            continue;
-        }
+    for (size_t i = 0; i < partition_size - (sizeof(MIDI_HEADER) - 1 + 4); ++i) {
+        if (is_midi_header(partition_data.data() + i)) {
+            uint32_t midi_size = read_big_endian_uint32(partition_data.data() + i + sizeof(MIDI_HEADER));
+            std::cout << "Possible .midi file found at offset " << i << ", size: " << midi_size << " bytes" << std::endl;
 
-        for (int i = 0; i < block_size - (sizeof(MIDI_HEADER) - 1); ++i) {
-            if (is_midi_header(block_data.data() + i)) {
+            std::string output_filename = "midi_file_" + std::to_string(midi_files_count) + ".midi";
+            std::ofstream output_file(output_filename, std::ios::binary);
+
+            if (output_file.is_open()) {
+                output_file.write(partition_data.data() + i, midi_size + sizeof(MIDI_HEADER));
+                output_file.close();
+                std::cout << "Saved potential .midi file as: " << output_filename << std::endl;
                 midi_files_count++;
+            } else {
+                std::cerr << "Error: Cannot create the output file: " << output_filename << std::endl;
             }
         }
     }
 
-    std::cout << "Found " << midi_files_count << " possible .midi files (including false positives)" << std::endl;
-
-    ext2fs_close(fs);
     return 0;
 }

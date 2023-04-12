@@ -5,6 +5,8 @@
 #include <cstring>
 
 constexpr char MIDI_HEADER[] = {'M', 'T', 'h', 'd'};
+constexpr char CHUNK_HEADER_SIZE = 8;
+constexpr size_t BLOCK_SIZE = 4096; // Assuming 4 KiB blocks
 constexpr size_t CHUNK_SIZE = 1024 * 1024;
 
 bool is_midi_header(const char *data) {
@@ -14,6 +16,19 @@ bool is_midi_header(const char *data) {
 uint32_t read_big_endian_uint32(const char *data) {
     return (static_cast<uint8_t>(data[0]) << 24) | (static_cast<uint8_t>(data[1]) << 16) |
            (static_cast<uint8_t>(data[2]) << 8) | static_cast<uint8_t>(data[3]);
+}
+
+size_t estimate_midi_file_size(const char *data, std::streamsize bytes_left) {
+    size_t total_size = sizeof(MIDI_HEADER) + 4;
+    size_t offset = total_size;
+
+    while (offset < bytes_left) {
+        uint32_t chunk_size = read_big_endian_uint32(data + offset + 4);
+        total_size += CHUNK_HEADER_SIZE + chunk_size;
+        offset += CHUNK_HEADER_SIZE + chunk_size;
+    }
+
+    return total_size;
 }
 
 int main(int argc, char *argv[]) {
@@ -42,17 +57,17 @@ int main(int argc, char *argv[]) {
 
         for (size_t i = 0; i < bytes_read - (sizeof(MIDI_HEADER) - 1 + 4); ++i) {
             if (is_midi_header(chunk_data.data() + i)) {
-                uint32_t midi_size = read_big_endian_uint32(chunk_data.data() + i + sizeof(MIDI_HEADER));
-                std::cout << "Possible .midi file found at offset " << (offset + i) << ", size: " << midi_size << " bytes" << std::endl;
+                size_t midi_size = estimate_midi_file_size(chunk_data.data() + i, bytes_read - i);
+                std::cout << "Possible .midi file found at offset " << (offset + i) << ", estimated size: " << midi_size << " bytes" << std::endl;
 
                 std::string output_filename = "midi_file_" + std::to_string(midi_files_count) + ".midi";
                 std::ofstream output_file(output_filename, std::ios::binary);
 
                 if (output_file.is_open()) {
                     // Read MIDI file data from the partition and write it to the output file.
-                    std::vector<char> midi_data(midi_size + sizeof(MIDI_HEADER));
+                    std::vector<char> midi_data(midi_size);
                     partition.seekg(offset + i);
-                    partition.read(midi_data.data(), midi_size + sizeof(MIDI_HEADER));
+                    partition.read(midi_data.data(), midi_size);
                     output_file.write(midi_data.data(), partition.gcount());
 
                     output_file.close();
